@@ -4,6 +4,8 @@
 #include <Adafruit_MQTT_Client.h>
 #include "secrets.h"
 
+#define LEFT_HANDED
+
 #define RED_LED 0
 #define MINI_BUTTON 0
 #define BLUE_LED 2
@@ -21,12 +23,12 @@
 ESP8266WebServer webServer(WEB_PORT);
 WiFiClient wifiClient;
 
-char mqttGetTopic[48];
-char mqttDiscTopic[48];
-char mqttSetTopic[48];
+char mqttPrefix[48];
+char mqttCmdTopic[48];
+char mqttAvailTopic[48];
 unsigned long lastDiscovery = 0;
 Adafruit_MQTT_Client mqtt(&wifiClient, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS);
-Adafruit_MQTT_Subscribe hassSub(&mqtt, mqttSetTopic, 2);
+Adafruit_MQTT_Subscribe hassSub(&mqtt, mqttCmdTopic);
 
 volatile unsigned int encoderValue = 0;
 volatile unsigned int lastEncoderValue = 0;
@@ -87,11 +89,12 @@ void setup(void) {
   Serial.print(F("  Connected, IP: "));
   Serial.println(WiFi.localIP());
 
-  snprintf(mqttGetTopic, sizeof(mqttGetTopic), "homeassistant/sensor/huzzah/%06X/value", ESP.getChipId());
-  snprintf(mqttDiscTopic, sizeof(mqttDiscTopic), "homeassistant/sensor/huzzah/%06X/config", ESP.getChipId());
-  snprintf(mqttSetTopic, sizeof(mqttSetTopic), "homeassistant/sensor/huzzah/%06X/set", ESP.getChipId());
+  snprintf(mqttPrefix, sizeof(mqttPrefix), "homeassistant/cover/huzzah/%06X", ESP.getChipId());
+  snprintf(mqttCmdTopic, sizeof(mqttCmdTopic), "%s/set", mqttPrefix);
+  snprintf(mqttAvailTopic, sizeof(mqttAvailTopic), "%s/avail", mqttPrefix);
   hassSub.setCallback(HassSet);
   mqtt.subscribe(&hassSub);
+  mqtt.will(mqttAvailTopic, "offline");
   int ret = mqtt.connect();
   if (ret != 0) { // connect will return 0 for connected
     Serial.println(mqtt.connectErrorString(ret));
@@ -99,7 +102,9 @@ void setup(void) {
   }
   
   webServer.on("/", &ReqInfo);
-  webServer.on("/move", &ReqMove);
+  webServer.on("/open", &ReqOpen);
+  webServer.on("/close", &ReqClose);
+  webServer.on("/stop", &ReqStop);
   webServer.begin();
 
   int seed = 0;
@@ -113,15 +118,24 @@ void setup(void) {
   Serial.println(F("Setup finished"));
 }
 
+#ifdef LEFT_HANDED
+#define DIR_OPEN 0
+#define DIR_CLOSE 1
+#else
+#define DIR_OPEN 1
+#define DIR_CLOSE 0
+#endif
+
 unsigned long motorStartMS = 0, motorCheckMS = 0;
 void startMotor(int direction)
 {
   if (motorStartMS)
     return; // already moving
-  
+
+  stopAll();
   encoderValue = lastEncoderValue = 0;
   timer1_write(MOTOR_TIMEOUT);
-  timer1_enable(TIM_DIV256, TIM_EDGE, TIM_LOOP);
+  timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE);
   digitalWrite(direction == 1 ? MOTOR1 : MOTOR2, HIGH);
   motorCheckMS = millis();
   motorStartMS = motorCheckMS ? motorCheckMS : 1;
@@ -140,9 +154,6 @@ void checkMotor()
 
   if (encoderValue != lastEncoderValue && (now - motorStartMS) < WINDOW_TIMEOUT)
   {
-    static bool led = false;
-    led = !led;
-    digitalWrite(RED_LED, led ? LOW : HIGH);
     lastEncoderValue = encoderValue;
     motorCheckMS = now;
   }
@@ -150,8 +161,6 @@ void checkMotor()
   {
     stopAll();
     timer1_disable();
-    digitalWrite(RED_LED, HIGH);
-    motorCheckMS = 0;
     
     Serial.print("Stopped window after ");
     Serial.print(now - motorStartMS);
@@ -159,6 +168,8 @@ void checkMotor()
     Serial.print(encoderValue);
     Serial.print(" encoder ticks");
     Serial.println("!");
+    
+    motorStartMS = 0;
   }
 }
   
@@ -167,6 +178,17 @@ void loop(void)
   webServer.handleClient();
   mqtt.readSubscription(10);
   checkMotor();
+  
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    digitalWrite(BLUE_LED, LOW); // on
+    Serial.println("NOT CONNECTED :(");
+    Serial.print("wifi status = ");
+    Serial.println(WiFi.status());
+    delay(100);
+    digitalWrite(BLUE_LED, HIGH); // off
+    delay(100);
+  }
 
   /*if (WiFi.status() != WL_CONNECTED && motorStartMS == 0)
     ESP.reset(); // reboot me, my firmware sucks!
@@ -195,6 +217,8 @@ void loop(void)
   {
     static int direction = 0;
     direction = !direction;
+    stopAll();
+    motorStartMS = 0;
     startMotor(direction);
   }
 }
@@ -205,36 +229,90 @@ void ReqInfo()
   
   String doc;
 
-  doc += F("Huzzah Window Controller.\n\n");
-  doc += F("Serial:"); doc += String(ESP.getChipId(), HEX); doc += F("\n");
-  doc += F("Now:"); doc += millis(); doc += F("\n");
-  
-  doc += F("\n\n");
-  webServer.send(200, "text/plain", doc);
+  doc += R"myhtml(
+<!DOCTYPE html>
+<html>
+<head><title>Huzzah Window</title>
+<script>
+function xhr(it) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.open("GET", it, true);
+  xhttp.send();
+}
+</script>
+</head>
+<body>
+<h1>Huzzah Window Controller v1.0</h1>
+<button type="button" onclick="xhr('/open')">Open</button> <button type="button" onclick="xhr('/close')">Close</button> <button type="button" onclick="xhr('/stop')">STOP</button>
+<br /><br />
+)myhtml";
+  doc += F("Serial: <b>"); doc += String(ESP.getChipId(), HEX); doc += F("</b><br />\n");
+  doc += F("Now: <b>"); doc += millis(); doc += F("</b><br />\n");
+  doc += F("</body></html>");
+
+  webServer.send(200, "text/html", doc);
 }
 
-void ReqMove()
+void ReqOpen()
 {
-  static int direction = 0;
-  direction = !direction;
-  
-  Serial.println(F("/move requested"));
+  Serial.println(F("/open requested"));
   
   String doc;
-  doc += F("Moving!\nNew Direction: ");
-  doc += direction;
+  doc += F("Moving in direction: ");
+  doc += DIR_OPEN;
   doc += F("\n\n");
   
   webServer.send(200, "text/plain", doc);
 
-  startMotor(direction);
+  startMotor(DIR_OPEN);
+}
+
+void ReqClose()
+{
+  Serial.println(F("/close requested"));
+  
+  String doc;
+  doc += F("Moving in direction: ");
+  doc += DIR_CLOSE;
+  doc += F("\n\n");
+  
+  webServer.send(200, "text/plain", doc);
+
+  startMotor(DIR_CLOSE);
+}
+
+void ReqStop()
+{
+  Serial.println(F("/stop requested"));
+  
+  String doc;
+  doc += F("Stopping...\n");
+  if (!motorStartMS)
+    doc += F("I think it was already stopped, but I'll try anyway\n");
+  
+  webServer.send(200, "text/plain", doc);
+
+  stopAll();
 }
 
 void HassDiscovery()
 {
-  Serial.print(F("Hass Discovery "));
-  String cfg = F("{\"dev_cla\":\"window\","
-                 "\"name\":\"Window ");
+  Serial.print(F("Hass Discovery... "));
+  /*String cfg = F("{\"dev_cla\":\"window\","
+                 "\"name\":\"Window Sensor ");
+  cfg += String(ESP.getChipId(), HEX);
+  cfg += "\",\"uniq_id\":\"";
+  cfg += String(ESP.getChipId(), HEX);
+  cfg += "\",\"stat_t\":\"";
+  cfg += mqttGetTopic;
+  cfg += "\"}";
+
+  mqtt.publish(mqttDiscTopic, cfg.c_str());
+  Serial.print(F("Sent 1!"));*/
+
+  
+  String cfg = F("{\"dev_cla\":\"switch\","
+                 "\"name\":\"Window Switch ");
   cfg += String(ESP.getChipId(), HEX);
   cfg += "\",\"uniq_id\":\"";
   cfg += String(ESP.getChipId(), HEX);
@@ -245,7 +323,7 @@ void HassDiscovery()
   cfg += "\"}";
 
   mqtt.publish(mqttDiscTopic, cfg.c_str());
-  Serial.println(F("Sent!"));
+  Serial.println(F("Sent 2!"));
   lastDiscovery = millis();
 }
 
