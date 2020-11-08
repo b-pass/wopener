@@ -1,10 +1,9 @@
+#include <EEPROM.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 #include <Adafruit_MQTT_Client.h>
 #include "secrets.h"
-
-#define LEFT_HANDED
 
 #define RED_LED 0
 #define MINI_BUTTON 0
@@ -46,9 +45,18 @@ ICACHE_RAM_ATTR void stopAll()
 }
 
 void ReqInfo();
-void ReqMove();
+void ReqSetConfig();
+void ReqGetConfig();
+void ReqOpen();
+void ReqClose();
+void ReqStop();
 void HassDiscovery();
 void HassCommand(char *, uint16_t);
+
+struct config_t {
+  int WriteCount = 0;
+  bool RightHanded = false;
+} Config;
 
 void setup(void) {
   pinMode(RED_LED, OUTPUT);
@@ -68,6 +76,9 @@ void setup(void) {
 
   pinMode(ENCODER1, INPUT);
   pinMode(ENCODER2, INPUT);
+
+  EEPROM.begin(512);
+  EEPROM.get(0, Config);
 
   attachInterrupt(digitalPinToInterrupt(ENCODER1), handleEncoder, RISING);
   attachInterrupt(digitalPinToInterrupt(ENCODER2), handleEncoder, RISING);
@@ -107,6 +118,8 @@ void setup(void) {
   webServer.on("/open", &ReqOpen);
   webServer.on("/close", &ReqClose);
   webServer.on("/stop", &ReqStop);
+  webServer.on("/config", &ReqGetConfig);
+  webServer.on("/set_config", &ReqSetConfig);
   webServer.begin();
 
   int seed = 0;
@@ -120,13 +133,8 @@ void setup(void) {
   Serial.println(F("Setup finished"));
 }
 
-#ifdef LEFT_HANDED
-#define DIR_OPEN 0
-#define DIR_CLOSE 1
-#else
-#define DIR_OPEN 1
-#define DIR_CLOSE 0
-#endif
+#define COUNTER_CLOCKWISE 0
+#define CLOCKWISE 1
 
 unsigned long motorStartMS = 0, motorCheckMS = 0;
 void startMotor(int direction)
@@ -258,43 +266,62 @@ function xhr(it) {
 void ReqOpen()
 {
   Serial.println(F("/open requested"));
-  
-  String doc;
-  doc += F("Moving in direction: ");
-  doc += DIR_OPEN;
-  doc += F("\n\n");
-  
-  webServer.send(200, "text/plain", doc);
-
-  startMotor(DIR_OPEN);
+  webServer.send(200, "text/plain", "OPENING");
+  HassCommand("open", 4);
 }
 
 void ReqClose()
 {
   Serial.println(F("/close requested"));
-  
-  String doc;
-  doc += F("Moving in direction: ");
-  doc += DIR_CLOSE;
-  doc += F("\n\n");
-  
-  webServer.send(200, "text/plain", doc);
-
-  startMotor(DIR_CLOSE);
+  webServer.send(200, "text/plain", "CLOSING");
+  HassCommand("close", 5);
 }
 
 void ReqStop()
 {
-  Serial.println(F("/stop requested"));
-  
-  String doc;
-  doc += F("Stopping...\n");
-  if (!motorStartMS)
-    doc += F("I think it was already stopped, but I'll try anyway\n");
-  
-  webServer.send(200, "text/plain", doc);
-
   stopAll();
+  Serial.println(F("/stop requested"));
+  webServer.send(200, "text/plain", "STOPPING");
+}
+
+void ReqGetConfig()
+{
+  Serial.println(F("/config requested"));
+  
+  String form;
+
+  form += R"html(
+<!DOCTYPE html>
+<html>
+<head><title>WOpener Config</title></head>
+<body>
+<h1>WOpener - Configuration</h1>
+<br /><br />Write Count: <b>)html";
+  form += Config.WriteCount;
+  form += R"html(</b>
+<br /><br />
+<form method="PORT" action="/set_config">
+<input type="checkbox" name="RightHanded" id="rh" value="1" )html";
+  if (Config.RightHanded) form += " checked ";
+  form += R"html( /><label for="rh">Right Handed (opens clockwise)</label>
+<br />
+<input type="submit" value="Save to EEPROM" /><br />
+</form></body></html>)html";
+
+  webServer.send(200, "text/html", form);
+}
+
+void ReqSetConfig()
+{
+  Serial.println(F("/set_config requested"));
+
+  Config.RightHanded = webServer.hasArg("RightHanded") && webServer.arg("RightHanded") == "1";
+
+  Config.WriteCount++;
+  EEPROM.put(0, Config);
+  EEPROM.commit();
+  
+  webServer.send(200, "text/plain", "OK, config written\n");
 }
 
 void HassDiscovery()
@@ -335,7 +362,7 @@ void HassCommand(char *cmd, uint16_t len)
   else if (toupper(cmd[0]) == 'S')
     stopAll();
   else if (toupper(cmd[0]) == '0')
-    startMotor(DIR_OPEN);
+    startMotor(Config.RightHanded ? CLOCKWISE : COUNTER_CLOCKWISE);
   else if (toupper(cmd[0]) == 'C')
-    startMotor(DIR_CLOSE);
+    startMotor(Config.RightHanded ? COUNTER_CLOCKWISE : CLOCKWISE);
 }
