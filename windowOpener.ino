@@ -23,7 +23,8 @@
 ESP8266WebServer webServer(WEB_PORT);
 WiFiClient wifiClient;
 
-char mqttPrefix[48];
+char mqttDiscTopic[48];
+char mqttStateTopic[48];
 char mqttCmdTopic[48];
 char mqttAvailTopic[48];
 unsigned long lastDiscovery = 0;
@@ -47,7 +48,7 @@ ICACHE_RAM_ATTR void stopAll()
 void ReqInfo();
 void ReqMove();
 void HassDiscovery();
-void HassSet(uint32_t);
+void HassCommand(char *, uint16_t);
 
 void setup(void) {
   pinMode(RED_LED, OUTPUT);
@@ -89,10 +90,11 @@ void setup(void) {
   Serial.print(F("  Connected, IP: "));
   Serial.println(WiFi.localIP());
 
-  snprintf(mqttPrefix, sizeof(mqttPrefix), "homeassistant/cover/huzzah/%06X", ESP.getChipId());
-  snprintf(mqttCmdTopic, sizeof(mqttCmdTopic), "%s/set", mqttPrefix);
-  snprintf(mqttAvailTopic, sizeof(mqttAvailTopic), "%s/avail", mqttPrefix);
-  hassSub.setCallback(HassSet);
+  snprintf(mqttDiscTopic, sizeof(mqttDiscTopic), "homeassistant/cover/huzzah/%06X/config", ESP.getChipId());
+  snprintf(mqttAvailTopic, sizeof(mqttAvailTopic), "homeassistant/cover/huzzah/%06X/avail", ESP.getChipId());
+  snprintf(mqttStateTopic, sizeof(mqttStateTopic), "homeassistant/cover/huzzah/%06X/get", ESP.getChipId());
+  snprintf(mqttCmdTopic, sizeof(mqttCmdTopic), "homeassistant/cover/huzzah/%06X/set", ESP.getChipId());
+  hassSub.setCallback(HassCommand);
   mqtt.subscribe(&hassSub);
   mqtt.will(mqttAvailTopic, "offline");
   int ret = mqtt.connect();
@@ -229,7 +231,7 @@ void ReqInfo()
   
   String doc;
 
-  doc += R"myhtml(
+  doc += R"html(
 <!DOCTYPE html>
 <html>
 <head><title>Huzzah Window</title>
@@ -245,10 +247,10 @@ function xhr(it) {
 <h1>Huzzah Window Controller v1.0</h1>
 <button type="button" onclick="xhr('/open')">Open</button> <button type="button" onclick="xhr('/close')">Close</button> <button type="button" onclick="xhr('/stop')">STOP</button>
 <br /><br />
-)myhtml";
-  doc += F("Serial: <b>"); doc += String(ESP.getChipId(), HEX); doc += F("</b><br />\n");
-  doc += F("Now: <b>"); doc += millis(); doc += F("</b><br />\n");
-  doc += F("</body></html>");
+)html";
+  doc += "Serial: <b>"; doc += String(ESP.getChipId(), HEX); doc += "</b><br />\n";
+  doc += "Now: <b>"; doc += millis(); doc += "</b><br />\n";
+  doc += "</body></html>";
 
   webServer.send(200, "text/html", doc);
 }
@@ -297,37 +299,43 @@ void ReqStop()
 
 void HassDiscovery()
 {
-  Serial.print(F("Hass Discovery... "));
-  /*String cfg = F("{\"dev_cla\":\"window\","
-                 "\"name\":\"Window Sensor ");
-  cfg += String(ESP.getChipId(), HEX);
-  cfg += "\",\"uniq_id\":\"";
-  cfg += String(ESP.getChipId(), HEX);
-  cfg += "\",\"stat_t\":\"";
-  cfg += mqttGetTopic;
-  cfg += "\"}";
-
-  mqtt.publish(mqttDiscTopic, cfg.c_str());
-  Serial.print(F("Sent 1!"));*/
-
+  Serial.println(F("Sending Hass Discovery & availability"));
   
-  String cfg = F("{\"dev_cla\":\"switch\","
-                 "\"name\":\"Window Switch ");
-  cfg += String(ESP.getChipId(), HEX);
-  cfg += "\",\"uniq_id\":\"";
-  cfg += String(ESP.getChipId(), HEX);
-  cfg += "\",\"stat_t\":\"";
-  cfg += mqttGetTopic;
-  cfg += "\",\"cmd_t\":\"";
-  cfg += mqttSetTopic;
-  cfg += "\"}";
+static char const PROGMEM cfgTemplate[] = R"json({
+"dev_cla":"window",
+"name":"Window Opener %06X",
+"uniq_id":"%06X",
+"avty_t":"%s",
+"cmd_t":"%s",
+"stat_t":"%s",
+"pl_cls":"close",
+"pl_open":"open",
+"pl_stop":"stop"
+})json";
 
-  mqtt.publish(mqttDiscTopic, cfg.c_str());
-  Serial.println(F("Sent 2!"));
+  char cfg[sizeof(cfgTemplate)+16*2+48*3];
+  snprintf(cfg, sizeof(cfg), cfgTemplate, 
+    ESP.getChipId(),
+    ESP.getChipId(),
+    mqttAvailTopic,
+    mqttCmdTopic,
+    mqttStateTopic);
+
+  mqtt.publish(mqttDiscTopic, cfg);
+  
+  mqtt.publish(mqttAvailTopic, "online");
+  
   lastDiscovery = millis();
 }
 
-void HassSet(uint32_t direction)
+void HassCommand(char *cmd, uint16_t len)
 {
-  startMotor(direction);
+  if (len < 1 || !cmd)
+    return;
+  else if (toupper(cmd[0]) == 'S')
+    stopAll();
+  else if (toupper(cmd[0]) == '0')
+    startMotor(DIR_OPEN);
+  else if (toupper(cmd[0]) == 'C')
+    startMotor(DIR_CLOSE);
 }
