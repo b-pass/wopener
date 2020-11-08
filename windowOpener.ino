@@ -90,10 +90,10 @@ void setup(void) {
   Serial.print(F("  Connected, IP: "));
   Serial.println(WiFi.localIP());
 
-  snprintf(mqttDiscTopic, sizeof(mqttDiscTopic), "homeassistant/cover/huzzah/%06X/config", ESP.getChipId());
-  snprintf(mqttAvailTopic, sizeof(mqttAvailTopic), "homeassistant/cover/huzzah/%06X/avail", ESP.getChipId());
-  snprintf(mqttStateTopic, sizeof(mqttStateTopic), "homeassistant/cover/huzzah/%06X/get", ESP.getChipId());
-  snprintf(mqttCmdTopic, sizeof(mqttCmdTopic), "homeassistant/cover/huzzah/%06X/set", ESP.getChipId());
+  snprintf(mqttDiscTopic, sizeof(mqttDiscTopic), "homeassistant/cover/wopener/%06X/config", ESP.getChipId());
+  snprintf(mqttAvailTopic, sizeof(mqttAvailTopic), "homeassistant/cover/wopener/%06X/avail", ESP.getChipId());
+  snprintf(mqttStateTopic, sizeof(mqttStateTopic), "homeassistant/cover/wopener/%06X/get", ESP.getChipId());
+  snprintf(mqttCmdTopic, sizeof(mqttCmdTopic), "homeassistant/cover/wopener/%06X/set", ESP.getChipId());
   hassSub.setCallback(HassCommand);
   mqtt.subscribe(&hassSub);
   mqtt.will(mqttAvailTopic, "offline");
@@ -234,7 +234,7 @@ void ReqInfo()
   doc += R"html(
 <!DOCTYPE html>
 <html>
-<head><title>Huzzah Window</title>
+<head><title>WOpener</title>
 <script>
 function xhr(it) {
   var xhttp = new XMLHttpRequest();
@@ -244,7 +244,7 @@ function xhr(it) {
 </script>
 </head>
 <body>
-<h1>Huzzah Window Controller v1.0</h1>
+<h1>WOpener - Window Controller v1.0</h1>
 <button type="button" onclick="xhr('/open')">Open</button> <button type="button" onclick="xhr('/close')">Close</button> <button type="button" onclick="xhr('/stop')">STOP</button>
 <br /><br />
 )html";
