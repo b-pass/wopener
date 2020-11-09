@@ -245,6 +245,11 @@ void ReqInfo()
 {
   Serial.println(F("info requested"));
   
+  if (!webServer.authenticate(WEB_USER, WEB_PASS)) {
+    webServer.requestAuthentication();
+    return;
+  }
+    
   String doc;
 
   doc += R"html(
@@ -275,6 +280,12 @@ function xhr(it) {
 void ReqOpen()
 {
   Serial.println(F("/open requested"));
+  
+  if (!webServer.authenticate(WEB_USER, WEB_PASS)) {
+    webServer.requestAuthentication();
+    return;
+  }
+  
   openWindow();
   webServer.send(200, "text/plain", "OPENING");
 }
@@ -282,6 +293,12 @@ void ReqOpen()
 void ReqClose()
 {
   Serial.println(F("/close requested"));
+  
+  if (!webServer.authenticate(WEB_USER, WEB_PASS)) {
+    webServer.requestAuthentication();
+    return;
+  }
+  
   closeWindow();
   webServer.send(200, "text/plain", "CLOSING");
 }
@@ -296,6 +313,11 @@ void ReqStop()
 void ReqGetConfig()
 {
   Serial.println(F("/config requested"));
+  
+  if (!webServer.authenticate(WEB_USER, WEB_PASS)) {
+    webServer.requestAuthentication();
+    return;
+  }
   
   String form;
 
@@ -323,6 +345,11 @@ void ReqGetConfig()
 void ReqSetConfig()
 {
   Serial.println(F("/set_config requested"));
+  
+  if (!webServer.authenticate(WEB_USER, WEB_PASS)) {
+    webServer.requestAuthentication();
+    return;
+  }
 
   Config.RightHanded = webServer.hasArg("RightHanded") && webServer.arg("RightHanded") == "1";
 
