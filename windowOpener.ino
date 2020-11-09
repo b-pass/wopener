@@ -6,7 +6,6 @@
 #include "secrets.h"
 
 #define RED_LED 0
-#define MINI_BUTTON 0
 #define BLUE_LED 2
 #define MOTOR1 12
 #define MOTOR2 13
@@ -78,7 +77,7 @@ void setup(void) {
   pinMode(ENCODER1, INPUT);
   pinMode(ENCODER2, INPUT);
 
-  EEPROM.begin(512);
+  EEPROM.begin(256);
   EEPROM.get(0, Config);
 
   attachInterrupt(digitalPinToInterrupt(ENCODER1), handleEncoder, RISING);
@@ -122,7 +121,6 @@ void setup(void) {
   randomSeed(seed ? seed : millis());
   
   digitalWrite(RED_LED, HIGH); // off
-  pinMode(MINI_BUTTON, INPUT);
   
   Serial.println(F("Setup finished"));
 
@@ -223,7 +221,11 @@ void loop(void)
   {
     Serial.print("Re-connecting to MQTT... ");
     Serial.println(mqtt.state());
-    if (!mqtt.connect(mqttDiscTopic, MQTT_USER, MQTT_PASS, mqttAvailTopic, 0, false, "offline"))
+
+    char clientID[16];
+    snprintf(clientID, sizeof(clientID), "wopener-%06X", ESP.getChipId());
+    
+    if (!mqtt.connect(clientID, MQTT_USER, MQTT_PASS, mqttAvailTopic, 0, false, "offline"))
     {
       Serial.print("MQTT connect failed: ");
       Serial.println(mqtt.state());
@@ -395,5 +397,5 @@ void HassCommand(char *topic, byte *payload, unsigned int len)
     closeWindow();
     
   Serial.print(F("Command was from MQTT: "));
-  Serial.println(payload ? payload[0] : '-');
+  Serial.println(payload ? payload[0] : 0);
 }
