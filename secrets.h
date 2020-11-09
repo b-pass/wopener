@@ -5,3 +5,5 @@
 #define MQTT_PASS "password"
 #define WIFI_SSID "ssid"
 #define WIFI_PASS "password"
+#define WEB_USER "username"
+#define WEB_PASS "password"
