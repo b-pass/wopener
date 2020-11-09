@@ -55,6 +55,7 @@ void ReqStop();
 
 struct config_t {
   int WriteCount = 0;
+  int Version = 1;
   bool RightHanded = false;
 } Config;
 
