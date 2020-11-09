@@ -2,7 +2,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
-#include <Adafruit_MQTT_Client.h>
+#include <PubSubClient.h>
 #include "secrets.h"
 
 #define RED_LED 0
@@ -22,14 +22,16 @@
 ESP8266WebServer webServer(WEB_PORT);
 WiFiClient wifiClient;
 
+unsigned long lastDiscovery = 0;
+void HassDiscovery();
+void HassCommand(char *topic, byte *payload, unsigned int len);
 char mqttDiscTopic[48];
 char mqttStateTopic[48];
 char mqttCmdTopic[48];
 char mqttAvailTopic[48];
-unsigned long lastDiscovery = 0;
-Adafruit_MQTT_Client mqtt(&wifiClient, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS);
-Adafruit_MQTT_Subscribe hassSub(&mqtt, mqttCmdTopic);
+PubSubClient mqtt(MQTT_HOST, MQTT_PORT, HassCommand, wifiClient);
 
+bool CurrentlyOpen = false;
 volatile unsigned int encoderValue = 0;
 volatile unsigned int lastEncoderValue = 0;
 ICACHE_RAM_ATTR void handleEncoder()
@@ -50,8 +52,6 @@ void ReqGetConfig();
 void ReqOpen();
 void ReqClose();
 void ReqStop();
-void HassDiscovery();
-void HassCommand(char *, uint16_t);
 
 struct config_t {
   int WriteCount = 0;
@@ -84,7 +84,7 @@ void setup(void) {
   attachInterrupt(digitalPinToInterrupt(ENCODER2), handleEncoder, RISING);
   timer1_isr_init();
   timer1_attachInterrupt(stopAll);
-      
+  
   Serial.println(F("WiFI begin " WIFI_SSID));
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.setAutoConnect(true);
@@ -105,14 +105,7 @@ void setup(void) {
   snprintf(mqttAvailTopic, sizeof(mqttAvailTopic), "homeassistant/cover/wopener/%06X/avail", ESP.getChipId());
   snprintf(mqttStateTopic, sizeof(mqttStateTopic), "homeassistant/cover/wopener/%06X/get", ESP.getChipId());
   snprintf(mqttCmdTopic, sizeof(mqttCmdTopic), "homeassistant/cover/wopener/%06X/set", ESP.getChipId());
-  hassSub.setCallback(HassCommand);
-  mqtt.subscribe(&hassSub);
-  mqtt.will(mqttAvailTopic, "offline");
-  int ret = mqtt.connect();
-  if (ret != 0) { // connect will return 0 for connected
-    Serial.println(mqtt.connectErrorString(ret));
-    mqtt.disconnect();
-  }
+  mqtt.setBufferSize(1024);
   
   webServer.on("/", &ReqInfo);
   webServer.on("/open", &ReqOpen);
@@ -131,26 +124,49 @@ void setup(void) {
   pinMode(MINI_BUTTON, INPUT);
   
   Serial.println(F("Setup finished"));
+
+  //closeWindow();
 }
 
-#define COUNTER_CLOCKWISE 0
-#define CLOCKWISE 1
-
 unsigned long motorStartMS = 0, motorCheckMS = 0;
-void startMotor(int direction)
+bool preStart()
 {
   if (motorStartMS)
-    return; // already moving
+    return false; // already moving
 
   stopAll();
-  encoderValue = lastEncoderValue = 0;
   timer1_write(MOTOR_TIMEOUT);
   timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE);
-  digitalWrite(direction == 1 ? MOTOR1 : MOTOR2, HIGH);
   motorCheckMS = millis();
   motorStartMS = motorCheckMS ? motorCheckMS : 1;
+  encoderValue = lastEncoderValue = 0;
   
-  Serial.print("Moving window, dir="); Serial.println(direction);
+  digitalWrite(RED_LED, LOW); // on
+  return true;
+}
+
+void openWindow()
+{
+  if (!preStart())
+    return;
+  
+  digitalWrite(Config.RightHanded ? MOTOR1 : MOTOR2, HIGH);
+  
+  Serial.print("Opening window");
+  mqtt.publish(mqttStateTopic, "opening");
+  CurrentlyOpen = true;
+}
+
+void closeWindow()
+{
+  if (!preStart())
+    return;
+  
+  digitalWrite(Config.RightHanded ? MOTOR2 : MOTOR1, HIGH);
+  
+  Serial.print("Closing window");
+  mqtt.publish(mqttStateTopic, "closing");
+  CurrentlyOpen = false;
 }
 
 void checkMotor()
@@ -171,6 +187,7 @@ void checkMotor()
   {
     stopAll();
     timer1_disable();
+    digitalWrite(RED_LED, HIGH); // off
     
     Serial.print("Stopped window after ");
     Serial.print(now - motorStartMS);
@@ -180,13 +197,14 @@ void checkMotor()
     Serial.println("!");
     
     motorStartMS = 0;
+    
+    mqtt.publish(mqttStateTopic, CurrentlyOpen ? "open" : "closed");
   }
 }
-  
+
 void loop(void)
 {
   webServer.handleClient();
-  mqtt.readSubscription(10);
   checkMotor();
   
   if (WiFi.status() != WL_CONNECTED)
@@ -200,36 +218,26 @@ void loop(void)
     delay(100);
   }
 
-  /*if (WiFi.status() != WL_CONNECTED && motorStartMS == 0)
-    ESP.reset(); // reboot me, my firmware sucks!
-  */
-  
-  if (!mqtt.connected())
+  if (!mqtt.loop())
   {
     Serial.print("Re-connecting to MQTT... ");
-    int ret = mqtt.connect();
-    if (ret != 0) { // connect will return 0 for connected
-      Serial.println(mqtt.connectErrorString(ret));
-      mqtt.disconnect();
+    Serial.println(mqtt.state());
+    if (!mqtt.connect(mqttDiscTopic, MQTT_USER, MQTT_PASS, mqttAvailTopic, 0, false, "offline"))
+    {
+      Serial.print("MQTT connect failed: ");
+      Serial.println(mqtt.state());
     }
-    else {
+    else
+    {
       Serial.println("MQTT Connected!");
+      mqtt.subscribe(mqttCmdTopic, 1);
       HassDiscovery();
     }
   }
   else
   {
-    if ((millis() - lastDiscovery) >= 300000)
+    if ((millis() - lastDiscovery) >= 600000)
       HassDiscovery();
-  }
-  
-  if (digitalRead(MINI_BUTTON) == LOW)
-  {
-    static int direction = 0;
-    direction = !direction;
-    stopAll();
-    motorStartMS = 0;
-    startMotor(direction);
   }
 }
 
@@ -255,6 +263,7 @@ function xhr(it) {
 <h1>WOpener - Window Controller v1.0</h1>
 <button type="button" onclick="xhr('/open')">Open</button> <button type="button" onclick="xhr('/close')">Close</button> <button type="button" onclick="xhr('/stop')">STOP</button>
 <br /><br />
+<a href="/config">View/edit configuration</a><br /><br />
 )html";
   doc += "Serial: <b>"; doc += String(ESP.getChipId(), HEX); doc += "</b><br />\n";
   doc += "Now: <b>"; doc += millis(); doc += "</b><br />\n";
@@ -266,15 +275,15 @@ function xhr(it) {
 void ReqOpen()
 {
   Serial.println(F("/open requested"));
+  openWindow();
   webServer.send(200, "text/plain", "OPENING");
-  HassCommand("open", 4);
 }
 
 void ReqClose()
 {
   Serial.println(F("/close requested"));
+  closeWindow();
   webServer.send(200, "text/plain", "CLOSING");
-  HassCommand("close", 5);
 }
 
 void ReqStop()
@@ -322,47 +331,41 @@ void ReqSetConfig()
   EEPROM.commit();
   
   webServer.send(200, "text/plain", "OK, config written\n");
+  Serial.println(F("Config written."));
 }
 
 void HassDiscovery()
 {
   Serial.println(F("Sending Hass Discovery & availability"));
   
-static char const PROGMEM cfgTemplate[] = R"json({
-"dev_cla":"window",
-"name":"Window Opener %06X",
-"uniq_id":"%06X",
-"avty_t":"%s",
-"cmd_t":"%s",
-"stat_t":"%s",
-"pl_cls":"close",
-"pl_open":"open",
-"pl_stop":"stop"
-})json";
-
-  char cfg[sizeof(cfgTemplate)+16*2+48*3];
-  snprintf(cfg, sizeof(cfg), cfgTemplate, 
+  char discoveryMsg[512];
+  snprintf(discoveryMsg, sizeof(discoveryMsg),
+    R"json({"dev_cla":"window","name":"Window Opener %06X","uniq_id":"%06X","avty_t":"%s","cmd_t":"%s","stat_t":"%s","pl_cls":"close","pl_open":"open","pl_stop":"stop"})json", 
     ESP.getChipId(),
     ESP.getChipId(),
     mqttAvailTopic,
     mqttCmdTopic,
     mqttStateTopic);
-
-  mqtt.publish(mqttDiscTopic, cfg);
+  
+  mqtt.publish(mqttDiscTopic, discoveryMsg);
   
   mqtt.publish(mqttAvailTopic, "online");
+  
+  if (!motorStartMS)
+    mqtt.publish(mqttStateTopic, CurrentlyOpen ? "open" : "closed");
   
   lastDiscovery = millis();
 }
 
-void HassCommand(char *cmd, uint16_t len)
+void HassCommand(char *topic, byte *payload, unsigned int len)
 {
-  if (len < 1 || !cmd)
-    return;
-  else if (toupper(cmd[0]) == 'S')
+  if (!payload || !len || toupper(payload[0]) == 'S')
     stopAll();
-  else if (toupper(cmd[0]) == '0')
-    startMotor(Config.RightHanded ? CLOCKWISE : COUNTER_CLOCKWISE);
-  else if (toupper(cmd[0]) == 'C')
-    startMotor(Config.RightHanded ? COUNTER_CLOCKWISE : CLOCKWISE);
+  else if (toupper(payload[0]) == 'O')
+    openWindow();
+  else if (toupper(payload[0]) == 'C')
+    closeWindow();
+    
+  Serial.print(F("Command was from MQTT: "));
+  Serial.println(payload ? payload[0] : '-');
 }
