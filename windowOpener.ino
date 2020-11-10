@@ -128,12 +128,12 @@ void setup(void) {
 }
 
 unsigned long motorStartMS = 0, motorCheckMS = 0;
-bool preStart()
-{
-  if (motorStartMS)
-    return false; // already moving
-
+void preStart()
+{ 
   stopAll();
+  if (motorStartMS)
+    delay(25); // was it already moving? pause a little
+  
   timer1_write(MOTOR_TIMEOUT);
   timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE);
   motorCheckMS = millis();
@@ -141,31 +141,32 @@ bool preStart()
   encoderValue = lastEncoderValue = 0;
   
   digitalWrite(RED_LED, LOW); // on
-  return true;
 }
 
 void openWindow()
 {
-  if (!preStart())
-    return;
+  if (motorStartMS && CurrentlyOpen)
+    return; // already moving
   
+  preStart();
   digitalWrite(Config.RightHanded ? MOTOR1 : MOTOR2, HIGH);
   
-  Serial.print("Opening window");
-  mqtt.publish(mqttStateTopic, "opening");
   CurrentlyOpen = true;
+  mqtt.publish(mqttStateTopic, "opening");
+  Serial.print("Opening window");
 }
 
 void closeWindow()
 {
-  if (!preStart())
-    return;
+  if (motorStartMS && !CurrentlyOpen)
+    return; // already moving
   
+  preStart();
   digitalWrite(Config.RightHanded ? MOTOR2 : MOTOR1, HIGH);
   
-  Serial.print("Closing window");
-  mqtt.publish(mqttStateTopic, "closing");
   CurrentlyOpen = false;
+  mqtt.publish(mqttStateTopic, "closing");
+  Serial.print("Closing window");
 }
 
 void checkMotor()
@@ -203,9 +204,6 @@ void checkMotor()
 
 void loop(void)
 {
-  webServer.handleClient();
-  checkMotor();
-  
   if (WiFi.status() != WL_CONNECTED)
   {
     digitalWrite(BLUE_LED, LOW); // on
@@ -214,8 +212,10 @@ void loop(void)
     Serial.println(WiFi.status());
     delay(100);
     digitalWrite(BLUE_LED, HIGH); // off
-    delay(100);
   }
+  
+  webServer.handleClient();
+  checkMotor();
 
   if (!mqtt.loop())
   {
@@ -273,6 +273,7 @@ function xhr(it) {
 <br /><br />
 <a href="/config">View/edit configuration</a><br /><br />
 )html";
+  doc += "<br /><h2>Rght now I think the window is: <b>"; doc += CurrentlyOpen ? "open" : "closed"; doc += "</b></h2><br /><br />\n";
   doc += "Serial: <b>"; doc += String(ESP.getChipId(), HEX); doc += "</b><br />\n";
   doc += "Now: <b>"; doc += millis(); doc += "</b><br />\n";
   doc += "</body></html>";
