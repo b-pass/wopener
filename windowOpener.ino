@@ -355,9 +355,11 @@ void ReqSetConfig()
     return;
   }
 
+  Config.Version = 1;
+  Config.WriteCount++;
+  
   Config.RightHanded = webServer.hasArg("RightHanded") && webServer.arg("RightHanded") == "1";
 
-  Config.WriteCount++;
   EEPROM.put(0, Config);
   EEPROM.commit();
   
@@ -367,7 +369,7 @@ void ReqSetConfig()
 
 void HassDiscovery()
 {
-  Serial.println(F("Sending Hass Discovery & availability"));
+  Serial.println(F("Sending Hass Discovery & availability & state"));
   
   char discoveryMsg[512];
   snprintf(discoveryMsg, sizeof(discoveryMsg),
@@ -382,7 +384,7 @@ void HassDiscovery()
   
   mqtt.publish(mqttAvailTopic, "online");
   
-  if (!motorStartMS)
+  if (!motorStartMS) // don't send while moving
     mqtt.publish(mqttStateTopic, CurrentlyOpen ? "open" : "closed");
   
   lastDiscovery = millis();
@@ -397,6 +399,7 @@ void HassCommand(char *topic, byte *payload, unsigned int len)
   else if (toupper(payload[0]) == 'C')
     closeWindow();
     
-  Serial.print(F("Command was from MQTT: "));
-  Serial.println(payload ? payload[0] : 0);
+  Serial.print(F("Command was from MQTT: '"));
+  Serial.write(payload, len);
+  Serial.println("'");
 }
